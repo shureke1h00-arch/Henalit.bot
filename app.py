@@ -1,4 +1,3 @@
-AAHvK0eNxVp3Imb3jIfdmbiv4EEj-5gt8nA time
 import imaplib
 import email
 import requests
