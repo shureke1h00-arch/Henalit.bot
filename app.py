@@ -1,5 +1,5 @@
-import imaplib
 import time
+import imaplib
 import email
 import requests
 import re
@@ -10,25 +10,7 @@ import html
 from email.header import decode_header
 from email.utils import parseaddr
 
-# ================== ДОДАНО ДЛЯ RENDER ==================
-from flask import Flask
-from threading import Thread
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-# =======================================================
-
-# ================== CONFIG ==================
+# ================== НАСТРОЙКИ ==================
 TELEGRAM_BOT_TOKEN = "8566965927:AAHF280cyaeLNDNSnu-iOnht7uCpCjEXnko"
 TELEGRAM_CHAT_ID = "-1003798450910"
 
@@ -47,7 +29,7 @@ ALLOWED_SENDERS = {
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("SignalBot")
+logger = logging.getLogger("PocketBot")
 
 seen_ids = set()
 sent_hashes = set()
@@ -192,15 +174,15 @@ PAIR_PATTERNS = [
     r"ПАРА:\s*([A-Z0-9/._-]+)",
     r"PAIR:\s*([A-Z0-9/._-]+)",
     r"SYMBOL:\s*([A-Z0-9/._-]+)",
-    r"\b([A-Z]{3}[\/\.\-_]?[A-Z]{3})\b",   # EURUSD / EUR/USD
-    r"\b([A-Z]{3,5}[\/\.\-_]?[A-Z]{3,5})\b",  # BTCUSDT, XAUUSD
+    r"\b([A-Z]{3}[\/\.\-_]?[A-Z]{3})\b",
+    r"\b([A-Z]{3,5}[\/\.\-_]?[A-Z]{3,5})\b",
 ]
 
 PRICE_PATTERNS = [
-    r"ЦІНА:\s*([\d.,]+)",
+    r"ЦЕНА:\s*([\d.,]+)",
     r"PRICE:\s*([\d.,]+)",
     r"ENTRY:\s*([\d.,]+)",
-    r"ВХІД:\s*([\d.,]+)",
+    r"ВХОД:\s*([\d.,]+)",
 ]
 
 TF_PATTERNS = [
@@ -215,7 +197,7 @@ TP_PATTERNS = [
     r"TP2:\s*([\d.,]+)",
     r"TP:\s*([\d.,]+)",
     r"TAKE PROFIT:\s*([\d.,]+)",
-    r"ПРИБУТОК:\s*([\d.,]+)",
+    r"ПРИБЫЛЬ:\s*([\d.,]+)",
 ]
 
 SL_PATTERNS = [
@@ -227,7 +209,7 @@ SL_PATTERNS = [
 RISK_PATTERNS = [
     r"RISK:\s*([\d.,]+)\s*%?",
     r"RISK\s*-\s*([\d.,]+)\s*%?",
-    r"РИЗИК:\s*([\d.,]+)\s*%?",
+    r"РИСК:\s*([\d.,]+)\s*%?",
 ]
 
 def extract_first(patterns, body, flags=re.IGNORECASE):
@@ -294,7 +276,7 @@ def score_signal(body):
 
     if re.search(r"(PAIR|ПАРА)", t):
         score += 8
-    if re.search(r"(ENTRY|ВХІД)", t):
+    if re.search(r"(ENTRY|ВХОД)", t):
         score += 8
     if re.search(r"(TIMEFRAME|TF|1M|5M|15M|1H|4H|1D)", t):
         score += 6
@@ -304,14 +286,14 @@ def score_signal(body):
         score += 10
     if extract_first(PRICE_PATTERNS, body):
         score += 6
-    if re.search(r"\b(BUY|SELL|CALL|PUT|ВГОРУ|ВНИЗ|UP|DOWN)\b", t):
+    if re.search(r"\b(BUY|SELL|CALL|PUT|ВВЕРХ|ВНИЗ|UP|DOWN)\b", t):
         score += 8
 
     return max(0, min(100, score))
 
 def build_message(body, subject="", sender=""):
     pair = extract_first(PAIR_PATTERNS, body) or "N/A"
-    price = normalize_price(extract_first(PRICE_PATTERNS, body)) or "MARKET"
+    price = normalize_price(extract_first(PRICE_PATTERNS, body)) or "ПО РЫНКУ"
     tf = extract_first(TF_PATTERNS, body) or "N/A"
     tp = normalize_price(extract_first(TP_PATTERNS, body)) or "N/A"
     sl = normalize_price(extract_first(SL_PATTERNS, body)) or "N/A"
@@ -319,45 +301,45 @@ def build_message(body, subject="", sender=""):
 
     t = body.upper()
     if any(x in t for x in ["ВНИЗ", "PUT", "SELL", "DOWN"]):
-        action = "SELL 🔴"
-    elif any(x in t for x in ["ВГОРУ", "CALL", "BUY", "UP"]):
-        action = "BUY 🟢"
+        direction = "ВНИЗ"
+    elif any(x in t for x in ["ВВЕРХ", "CALL", "BUY", "UP"]):
+        direction = "ВВЕРХ"
     else:
-        action = "CHECK CHART 🟡"
+        direction = "НЕЯСНО"
 
     score = score_signal(body)
-    if score >= 80:
-        quality = "ULTRA"
-    elif score >= 65:
-        quality = "STRONG"
-    elif score >= 55:
-        quality = "OK"
-    else:
-        quality = "WEAK"
 
-    if tp == "N/A" and price != "MARKET":
-        tp = "MANUAL"
-    if sl == "N/A" and price != "MARKET":
-        sl = "MANUAL"
+    tf_map = {
+        "1M": "1 минута",
+        "3M": "3 минуты",
+        "5M": "5 минут",
+        "15M": "15 минут",
+        "30M": "30 минут",
+        "1H": "1 час",
+        "4H": "4 часа",
+        "1D": "1 день",
+    }
+
+    duration = tf_map.get(tf.upper(), tf)
 
     text = f"""
-<b>🚀 SIGNAL</b>
+<b>🚀 СИГНАЛ</b>
 
-<b>PAIR:</b> <code>{html.escape(pair)}</code>
-<b>ACTION:</b> <code>{html.escape(action)}</code>
-<b>ENTRY:</b> <code>{html.escape(price)}</code>
+<b>Пара:</b> <code>{html.escape(pair)}</code>
+<b>Направление:</b> <code>{html.escape(direction)}</code>
+<b>Цена открытия:</b> <code>{html.escape(price)}</code>
+<b>Время сделки:</b> <code>{html.escape(duration)}</code>
+<b>Качество сигнала:</b> <code>{score}%</code>
 <b>TP:</b> <code>{html.escape(tp)}</code>
 <b>SL:</b> <code>{html.escape(sl)}</code>
-<b>RISK:</b> <code>{html.escape(str(risk))}%</code>
-<b>TF:</b> <code>{html.escape(tf)}</code>
-<b>QUALITY:</b> <code>{quality} ({score}/100)</code>
-<b>TIME:</b> <code>{time.strftime("%H:%M:%S")}</code>
+<b>Риск:</b> <code>{html.escape(str(risk))}%</code>
+<b>Время:</b> <code>{time.strftime("%H:%M:%S")}</code>
 """.strip()
 
     if subject:
-        text += f"\n<b>SUBJECT:</b> <code>{html.escape(subject[:120])}</code>"
+        text += f"\n<b>Тема:</b> <code>{html.escape(subject[:120])}</code>"
     if sender:
-        text += f"\n<b>FROM:</b> <code>{html.escape(sender[:120])}</code>"
+        text += f"\n<b>От:</b> <code>{html.escape(sender[:120])}</code>"
 
     return text, score
 
@@ -380,7 +362,6 @@ def check_mail():
     while True:
         try:
             mail.select("inbox")
-
             _, data = mail.search(None, "UNSEEN")
             msg_ids = data[0].split()
 
@@ -435,7 +416,6 @@ def check_mail():
                 sent_hashes.add(h)
                 seen_ids.add(mid)
                 mail.store(num, "+FLAGS", "\\Seen")
-
                 save_state()
 
             mail.noop()
@@ -452,7 +432,4 @@ def check_mail():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    # ЗАПУСКАЄМО ФЕЙКОВИЙ СЕРВЕР ПЕРЕД БОТОМ
-    keep_alive()
-    # ЗАПУСКАЄМО ОСНОВНОГО БОТА
     check_mail()
