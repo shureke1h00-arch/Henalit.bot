@@ -1,4 +1,4 @@
-import time
+AAHvK0eNxVp3Imb3jIfdmbiv4EEj-5gt8nA time
 import imaplib
 import email
 import requests
@@ -29,7 +29,7 @@ def keep_alive():
 # =======================================================
 
 # ================== CONFIG ==================
-TELEGRAM_BOT_TOKEN = "8566965927:AAHvK0eNxVp3Imb3jIfdmbiv4EEj-5gt8nA"
+TELEGRAM_BOT_TOKEN = "8566965927:AAHF280cyaeLNDNSnu-iOnht7uCpCjEXnko"
 TELEGRAM_CHAT_ID = "-1003798450910"
 
 EMAIL_USER = "signalcom46@gmail.com"
