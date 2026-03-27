@@ -10,6 +10,24 @@ import html
 from email.header import decode_header
 from email.utils import parseaddr
 
+# ================== ДОДАНО ДЛЯ RENDER ==================
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+# =======================================================
+
 # ================== CONFIG ==================
 TELEGRAM_BOT_TOKEN = "8566965927:AAHvK0eNxVp3Imb3jIfdmbiv4EEj-5gt8nA"
 TELEGRAM_CHAT_ID = "-1003798450910"
@@ -317,7 +335,6 @@ def build_message(body, subject="", sender=""):
     else:
         quality = "WEAK"
 
-    # якщо немає TP/SL, але є ціна і напрямок, даємо базовий шаблон
     if tp == "N/A" and price != "MARKET":
         tp = "MANUAL"
     if sl == "N/A" and price != "MARKET":
@@ -397,7 +414,6 @@ def check_mail():
                     mail.store(num, "+FLAGS", "\\Seen")
                     continue
 
-                # антидубль по змісту
                 h = message_hash(from_header, subject, body)
                 if h in sent_hashes:
                     stats["duplicates"] = stats.get("duplicates", 0) + 1
@@ -436,4 +452,7 @@ def check_mail():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
+    # ЗАПУСКАЄМО ФЕЙКОВИЙ СЕРВЕР ПЕРЕД БОТОМ
+    keep_alive()
+    # ЗАПУСКАЄМО ОСНОВНОГО БОТА
     check_mail()
