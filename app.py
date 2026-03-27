@@ -18,15 +18,12 @@ EMAIL_USER = "signalcom46@gmail.com"
 EMAIL_PASS = "nbgaewtkyoffhruy"
 IMAP_HOST = "imap.gmail.com"
 
-# ВСТАВ СВОЄ ПОСИЛАННЯ ВІД MONGODB Atlas:
-MONGO_URI = "ТВІЙ_РЯДОК_ПІДКЛЮЧЕННЯ_ТУТ"
+# ✅ Твій робочий рядок підключення з паролем
+MONGO_URI = "mongodb+srv://Henalit:9gmtiYigxc7fAwdS@cluster0.iwkhmas.mongodb.net/?appName=Cluster0"
 
-# ================== ПАРАМЕТРИ ФІЛЬТРАЦІЇ ==================
 CHECK_INTERVAL = 25
 MIN_SCORE = 75
 PAIR_COOLDOWN_SEC = 300
-
-# 💰 Пункт 2: Тільки перевірені пари
 ALLOWED_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "BTCUSD", "ETHUSD", "EURJPY"]
 
 BAD_WORDS = ["MAYBE", "WAIT", "UNCLEAR", "LOW CONFIDENCE", "SIDEWAYS", "RANGE", "FLAT", "CHOPPY"]
@@ -46,7 +43,7 @@ except Exception as e:
 
 app = Flask(__name__)
 @app.route("/")
-def home(): return "PocketBot v3.0 (PRO) is ACTIVE 🚀"
+def home(): return "PocketBot PRO is ACTIVE 🚀"
 
 def run():
     port = int(os.environ.get("PORT", 8080))
@@ -80,7 +77,6 @@ def is_good_time():
     hour = int(time.strftime("%H"))
     return 9 <= hour <= 22
 
-# 🧠 Пункт 3: Покращений скоринг
 def score_signal(body):
     t = body.upper()
     score = 0
@@ -93,8 +89,6 @@ def score_signal(body):
     if "TREND" in t: score += 10
     if "TP" in t: score += 10
     if "SL" in t: score += 10
-    
-    # Штрафи
     if "MAYBE" in t: score -= 40
     if "WAIT" in t: score -= 30
     if "UNCLEAR" in t: score -= 50
@@ -104,7 +98,6 @@ def build_message(body):
     raw_pair = re.search(r"([A-Z]{3,5}/?[A-Z]{3,5})", body, re.I)
     pair = raw_pair.group(1).replace("/", "").upper() if raw_pair else "N/A"
     
-    # 💰 Пункт 2: Перевірка пари
     if pair not in ALLOWED_PAIRS:
         return "FILTERED_PAIR", 0, None, None
 
@@ -120,33 +113,18 @@ def build_message(body):
     else: return None, 0, None, None
 
     score = score_signal(body)
-    
-    # 🚀 Пункт 4: Тег "Рекомендовано"
     tag = "🔥 <b>РЕКОМЕНДОВАНО</b>\n" if score >= 85 else ""
     status = "🟢 СИЛЬНЫЙ" if score >= 85 else "🟡 СРЕДНИЙ" if score >= 75 else "🔴 СЛАБЫЙ"
     
-    emoji = "🔥🔥🔥" if score >= 85 else "🔥🔥" if score >= 75 else "🔥"
-    text = f"""
-{tag}<b>🚀 СИГНАЛ {emoji}</b>
-
-<b>📊 Пара:</b> <code>{pair}</code>
-<b>📈 Направление:</b> <b>{direction}</b>
-<b>💰 Цена входа:</b> <code>{price}</code>
-<b>⏱ Время сделки:</b> {tf}
-<b>📊 Качество:</b> {score}% ({status})
-
-<b>🕒 Время сигнала:</b> {time.strftime('%H:%M:%S')}
-""".strip()
+    text = f"{tag}<b>🚀 СИГНАЛ {'🔥🔥🔥' if score >= 85 else '🔥🔥'}</b>\n\n<b>📊 Пара:</b> <code>{pair}</code>\n<b>📈 Направление:</b> <b>{direction}</b>\n<b>💰 Цена:</b> <code>{price}</code>\n<b>⏱ Время:</b> {tf}\n<b>📊 Качество:</b> {score}% ({status})\n\n<b>🕒 Время:</b> {time.strftime('%H:%M:%S')}"
     return text, score, pair, direction
 
 def send_telegram(text):
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
-                      json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
         time.sleep(1) 
     except: pass
 
-# ================== ЦИКЛ ==================
 def connect_mail():
     while True:
         try:
@@ -157,62 +135,40 @@ def connect_mail():
 def check_mail():
     seen_ids, recent_pairs, sent_hashes = load_state()
     mail = connect_mail()
-
     while True:
         try:
             if not is_good_time():
                 time.sleep(60); continue
-
             mail.select("inbox")
             _, data = mail.search(None, "UNSEEN")
             for num in data[0].split():
                 mid = num.decode()
                 if mid in seen_ids: continue
-                
                 _, msg_data = mail.fetch(num, "(RFC822)")
                 if not msg_data or not msg_data[0]: continue
-                
                 seen_ids.add(mid)
                 mail.store(num, '+FLAGS', '\\Seen')
-                
                 msg = email.message_from_bytes(msg_data[0][1])
                 body = ""
                 for part in msg.walk():
                     if part.get_content_type() == "text/plain":
                         body = part.get_payload(decode=True).decode(errors="ignore")
-
                 if not body or not ("@tradingview.com" in msg.get("From", "").lower()):
                     save_state(seen_ids, recent_pairs, sent_hashes); continue
-
-                # 📊 Пункт 1: Фільтр по кількості слів
-                if len(body.split()) < 5:
+                if len(body.split()) < 5 or any(x in body.upper() for x in BAD_WORDS) or not any(x in body.upper() for x in GOOD_WORDS):
                     save_state(seen_ids, recent_pairs, sent_hashes); continue
-
-                if any(x in body.upper() for x in BAD_WORDS):
-                    save_state(seen_ids, recent_pairs, sent_hashes); continue
-
-                if not any(x in body.upper() for x in GOOD_WORDS):
-                    save_state(seen_ids, recent_pairs, sent_hashes); continue
-
                 h = make_hash(body)
                 if h in sent_hashes:
                     save_state(seen_ids, recent_pairs, sent_hashes); continue
-
                 res = build_message(body)
                 if res[0] is None or res[0] == "FILTERED_PAIR":
                     save_state(seen_ids, recent_pairs, sent_hashes); continue
-                
                 text, score, pair, direction = res
-                key = pair 
-                now = time.time()
-                
-                if score >= MIN_SCORE and (key not in recent_pairs or now - recent_pairs[key] > PAIR_COOLDOWN_SEC):
+                if score >= MIN_SCORE and (pair not in recent_pairs or time.time() - recent_pairs[pair] > PAIR_COOLDOWN_SEC):
                     send_telegram(text)
-                    recent_pairs[key] = now
+                    recent_pairs[pair] = time.time()
                     sent_hashes.add(h)
-                
                 save_state(seen_ids, recent_pairs, sent_hashes)
-
             mail.noop()
         except: mail = connect_mail()
         time.sleep(CHECK_INTERVAL)
@@ -220,4 +176,4 @@ def check_mail():
 if __name__ == "__main__":
     keep_alive()
     check_mail()
-    
+                       
