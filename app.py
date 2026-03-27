@@ -9,6 +9,8 @@ import os
 import html
 from email.header import decode_header
 from email.utils import parseaddr
+from flask import Flask
+from threading import Thread
 
 # ================== НАСТРОЙКИ ==================
 TELEGRAM_BOT_TOKEN = "8566965927:AAHF280cyaeLNDNSnu-iOnht7uCpCjEXnko"
@@ -16,420 +18,188 @@ TELEGRAM_CHAT_ID = "-1003798450910"
 
 EMAIL_USER = "signalcom46@gmail.com"
 EMAIL_PASS = "nbgaewtkyoffhruy"
+
 IMAP_HOST = "imap.gmail.com"
 
 CHECK_INTERVAL = 25
-MIN_SCORE = 55
+MIN_SCORE = 65  # 🔥 тільки сильні сигнали
 STATE_FILE = "bot_state.json"
 
-ALLOWED_SENDERS = {
-    "noreply@tradingview.com",
-    "alerts@tradingview.com",
-    "no-reply@tradingview.com",
-}
+# ================== WEB (RENDER) ==================
+app = Flask('')
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("PocketBot")
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    Thread(target=run).start()
+
+# ================== LOG ==================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("BOT")
 
 seen_ids = set()
 sent_hashes = set()
-stats = {
-    "sent": 0,
-    "skipped_low_score": 0,
-    "skipped_sender": 0,
-    "duplicates": 0,
-}
-
-# ================== STATE ==================
-def load_state():
-    global seen_ids, sent_hashes, stats
-    if not os.path.exists(STATE_FILE):
-        return
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            seen_ids = set(data.get("seen_ids", []))
-            sent_hashes = set(data.get("sent_hashes", []))
-            stats.update(data.get("stats", {}))
-        logger.info(f"✅ State loaded: {len(seen_ids)} seen, {len(sent_hashes)} hashes")
-    except Exception as e:
-        logger.error(f"⚠️ State load error: {e}")
-
-def save_state():
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "seen_ids": list(seen_ids)[-5000:],
-                    "sent_hashes": list(sent_hashes)[-5000:],
-                    "stats": stats,
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-    except Exception as e:
-        logger.error(f"⚠️ State save error: {e}")
+recent_pairs = {}
 
 # ================== HELPERS ==================
+def send_telegram(text):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=10
+        )
+        time.sleep(1)
+    except:
+        pass
+
 def decode_mime(value):
     if not value:
         return ""
     parts = decode_header(value)
-    out = []
-    for part, enc in parts:
-        if isinstance(part, bytes):
-            try:
-                out.append(part.decode(enc or "utf-8", errors="ignore"))
-            except Exception:
-                out.append(part.decode("utf-8", errors="ignore"))
-        else:
-            out.append(str(part))
-    return "".join(out)
-
-def normalize_text(text):
-    text = text or ""
-    text = text.replace("\r", "\n")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-def strip_html(html_text):
-    html_text = re.sub(r"(?is)<(script|style).*?>.*?(</\1>)", "", html_text)
-    html_text = re.sub(r"(?is)<br\s*/?>", "\n", html_text)
-    html_text = re.sub(r"(?is)</p>", "\n", html_text)
-    html_text = re.sub(r"(?is)<.*?>", " ", html_text)
-    html_text = re.sub(r"&nbsp;", " ", html_text)
-    html_text = re.sub(r"&amp;", "&", html_text)
-    html_text = re.sub(r"\s{2,}", " ", html_text)
-    return html_text.strip()
+    return "".join(
+        p.decode(enc or "utf-8", "ignore") if isinstance(p, bytes) else str(p)
+        for p, enc in parts
+    )
 
 def get_body(msg):
-    body_plain = ""
-    body_html = ""
-
-    if msg.is_multipart():
-        for part in msg.walk():
-            ctype = part.get_content_type()
-            disp = str(part.get("Content-Disposition", ""))
-
-            if "attachment" in disp.lower():
-                continue
-
-            payload = part.get_payload(decode=True)
-            if not payload:
-                continue
-
-            if ctype == "text/plain" and not body_plain:
-                body_plain = payload.decode(errors="ignore")
-            elif ctype == "text/html" and not body_html:
-                body_html = payload.decode(errors="ignore")
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            body_plain = payload.decode(errors="ignore")
-
-    if body_plain.strip():
-        return normalize_text(body_plain)
-    if body_html.strip():
-        return normalize_text(strip_html(body_html))
+    for part in msg.walk():
+        if part.get_content_type() == "text/plain":
+            return part.get_payload(decode=True).decode(errors="ignore")
     return ""
 
-def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            logger.info("✅ Sent to Telegram")
-        else:
-            logger.warning(f"⚠️ Telegram response: {resp.status_code} {resp.text[:150]}")
-        time.sleep(1)
-    except Exception as e:
-        logger.error(f"❌ Telegram error: {e}")
-
 def is_allowed_sender(from_header):
-    from_email = parseaddr(from_header or "")[1].lower()
-    if not from_email:
-        return False
-    if from_email in ALLOWED_SENDERS:
-        return True
-    if from_email.endswith("@tradingview.com"):
-        return True
-    return False
+    email_addr = parseaddr(from_header)[1].lower()
+    return email_addr.endswith("@tradingview.com")
 
-def message_hash(sender, subject, body):
-    raw = f"{sender}|{subject}|{body[:700]}"
-    return str(abs(hash(raw)))
-
-# ================== EXTRACTORS ==================
-PAIR_PATTERNS = [
-    r"ПАРА:\s*([A-Z0-9/._-]+)",
-    r"PAIR:\s*([A-Z0-9/._-]+)",
-    r"SYMBOL:\s*([A-Z0-9/._-]+)",
-    r"\b([A-Z]{3}[\/\.\-_]?[A-Z]{3})\b",
-    r"\b([A-Z]{3,5}[\/\.\-_]?[A-Z]{3,5})\b",
-]
-
-PRICE_PATTERNS = [
-    r"ЦЕНА:\s*([\d.,]+)",
-    r"PRICE:\s*([\d.,]+)",
-    r"ENTRY:\s*([\d.,]+)",
-    r"ВХОД:\s*([\d.,]+)",
-]
-
-TF_PATTERNS = [
-    r"TF:\s*([1-9]?[mhd])",
-    r"TIMEFRAME:\s*([1-9]?[mhd])",
-    r"TIME FRAME:\s*([1-9]?[mhd])",
-    r"\b(1M|3M|5M|15M|30M|1H|4H|1D)\b",
-]
-
-TP_PATTERNS = [
-    r"TP1:\s*([\d.,]+)",
-    r"TP2:\s*([\d.,]+)",
-    r"TP:\s*([\d.,]+)",
-    r"TAKE PROFIT:\s*([\d.,]+)",
-    r"ПРИБЫЛЬ:\s*([\d.,]+)",
-]
-
-SL_PATTERNS = [
-    r"SL:\s*([\d.,]+)",
-    r"STOP LOSS:\s*([\d.,]+)",
-    r"СТОП:\s*([\d.,]+)",
-]
-
-RISK_PATTERNS = [
-    r"RISK:\s*([\d.,]+)\s*%?",
-    r"RISK\s*-\s*([\d.,]+)\s*%?",
-    r"РИСК:\s*([\d.,]+)\s*%?",
-]
-
-def extract_first(patterns, body, flags=re.IGNORECASE):
-    for pat in patterns:
-        m = re.search(pat, body, flags)
+# ================== PARSING ==================
+def extract(patterns, text):
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
         if m:
             return m.group(1)
     return None
-
-def normalize_price(value):
-    if not value:
-        return None
-    return value.replace(",", ".").strip()
 
 def score_signal(body):
     t = body.upper()
     score = 0
 
-    positive_weights = {
-        "BUY": 12,
-        "SELL": 12,
-        "CALL": 12,
-        "PUT": 12,
-        "BREAKOUT": 10,
-        "RETEST": 8,
-        "CONFLUENCE": 10,
-        "SUPPORT": 8,
-        "RESISTANCE": 8,
-        "BOS": 8,
-        "CHOCH": 8,
-        "ENTRY": 8,
-        "SETUP": 7,
-        "CONFIRMED": 10,
-        "STRONG": 12,
-        "HIGH PROBABILITY": 15,
-        "TREND": 6,
-        "RISK/REWARD": 8,
-        "RR": 6,
-        "TP": 6,
-        "SL": 6,
-    }
+    if "BUY" in t or "CALL" in t: score += 15
+    if "SELL" in t or "PUT" in t: score += 15
+    if "STRONG" in t: score += 20
+    if "CONFIRM" in t: score += 10
+    if "TP" in t: score += 10
+    if "SL" in t: score += 10
+    if "ENTRY" in t: score += 10
 
-    negative_weights = {
-        "MAYBE": -8,
-        "PROBABLY": -6,
-        "NOT SURE": -15,
-        "UNCLEAR": -10,
-        "WAIT": -4,
-        "WATCH": -2,
-        "LOW CONFIDENCE": -15,
-        "WEAK": -20,
-        "NO TRADE": -30,
-        "POSSIBLE": -6,
-        "SOMETIME": -8,
-    }
-
-    for k, w in positive_weights.items():
-        if k in t:
-            score += w
-
-    for k, w in negative_weights.items():
-        if k in t:
-            score += w
-
-    if re.search(r"(PAIR|ПАРА)", t):
-        score += 8
-    if re.search(r"(ENTRY|ВХОД)", t):
-        score += 8
-    if re.search(r"(TIMEFRAME|TF|1M|5M|15M|1H|4H|1D)", t):
-        score += 6
-    if re.search(r"(TP|TAKE PROFIT|SL|STOP LOSS)", t):
-        score += 8
-    if extract_first(PAIR_PATTERNS, body):
-        score += 10
-    if extract_first(PRICE_PATTERNS, body):
-        score += 6
-    if re.search(r"\b(BUY|SELL|CALL|PUT|ВВЕРХ|ВНИЗ|UP|DOWN)\b", t):
-        score += 8
+    if any(x in t for x in ["MAYBE", "WAIT", "POSSIBLE", "UNCLEAR"]):
+        score -= 30
 
     return max(0, min(100, score))
 
-def build_message(body, subject="", sender=""):
-    pair = extract_first(PAIR_PATTERNS, body) or "N/A"
-    price = normalize_price(extract_first(PRICE_PATTERNS, body)) or "ПО РЫНКУ"
-    tf = extract_first(TF_PATTERNS, body) or "N/A"
-    tp = normalize_price(extract_first(TP_PATTERNS, body)) or "N/A"
-    sl = normalize_price(extract_first(SL_PATTERNS, body)) or "N/A"
-    risk = normalize_price(extract_first(RISK_PATTERNS, body)) or "1.0"
+# ================== MAIN MESSAGE ==================
+def build_message(body):
+    pair = extract([r"([A-Z]{3,5}/?[A-Z]{3,5})"], body) or "N/A"
+    price = extract([r"([\d.]+)"], body) or "MARKET"
+    tf = extract([r"(1M|3M|5M|15M|1H)"], body) or "5M"
 
     t = body.upper()
-    if any(x in t for x in ["ВНИЗ", "PUT", "SELL", "DOWN"]):
-        direction = "ВНИЗ"
-    elif any(x in t for x in ["ВВЕРХ", "CALL", "BUY", "UP"]):
-        direction = "ВВЕРХ"
+
+    if "SELL" in t or "PUT" in t:
+        direction = "ВНИЗ 🔴"
+    elif "BUY" in t or "CALL" in t:
+        direction = "ВВЕРХ 🟢"
     else:
-        direction = "НЕЯСНО"
+        return None, 0, None, None
 
     score = score_signal(body)
+
+    # анти спам по парі
+    key = f"{pair}_{direction}"
+    now = time.time()
+    if key in recent_pairs and now - recent_pairs[key] < 300:
+        return None, 0, None, None
+    recent_pairs[key] = now
+
+    # емодзі
+    emoji = "🔥🔥🔥" if score >= 80 else "🔥" if score >= 70 else ""
 
     tf_map = {
         "1M": "1 минута",
         "3M": "3 минуты",
         "5M": "5 минут",
         "15M": "15 минут",
-        "30M": "30 минут",
-        "1H": "1 час",
-        "4H": "4 часа",
-        "1D": "1 день",
+        "1H": "1 час"
     }
 
-    duration = tf_map.get(tf.upper(), tf)
+    duration = tf_map.get(tf, "5 минут")
 
     text = f"""
-<b>🚀 СИГНАЛ</b>
+<b>🚀 СИГНАЛ {emoji}</b>
 
-<b>Пара:</b> <code>{html.escape(pair)}</code>
-<b>Направление:</b> <code>{html.escape(direction)}</code>
-<b>Цена открытия:</b> <code>{html.escape(price)}</code>
-<b>Время сделки:</b> <code>{html.escape(duration)}</code>
-<b>Качество сигнала:</b> <code>{score}%</code>
-<b>TP:</b> <code>{html.escape(tp)}</code>
-<b>SL:</b> <code>{html.escape(sl)}</code>
-<b>Риск:</b> <code>{html.escape(str(risk))}%</code>
-<b>Время:</b> <code>{time.strftime("%H:%M:%S")}</code>
+<b>Пара:</b> {pair}
+<b>Направление:</b> {direction}
+<b>Цена входа:</b> {price}
+<b>Время сделки:</b> {duration}
+<b>Качество:</b> {score}%
+<b>Время:</b> {time.strftime("%H:%M:%S")}
 """.strip()
 
-    if subject:
-        text += f"\n<b>Тема:</b> <code>{html.escape(subject[:120])}</code>"
-    if sender:
-        text += f"\n<b>От:</b> <code>{html.escape(sender[:120])}</code>"
-
-    return text, score
+    return text, score, pair, direction
 
 # ================== IMAP ==================
-def connect_mail():
+def connect():
     while True:
         try:
-            mail = imaplib.IMAP4_SSL(IMAP_HOST)
-            mail.login(EMAIL_USER, EMAIL_PASS)
-            logger.info("📩 IMAP connected")
-            return mail
-        except Exception as e:
-            logger.error(f"❌ IMAP connect error: {e}")
+            m = imaplib.IMAP4_SSL(IMAP_HOST)
+            m.login(EMAIL_USER, EMAIL_PASS)
+            return m
+        except:
             time.sleep(10)
 
 def check_mail():
-    load_state()
-    mail = connect_mail()
+    mail = connect()
 
     while True:
         try:
             mail.select("inbox")
             _, data = mail.search(None, "UNSEEN")
-            msg_ids = data[0].split()
 
-            if msg_ids:
-                logger.info(f"📬 Unseen messages: {len(msg_ids)}")
-
-            for num in msg_ids:
-                mid = num.decode(errors="ignore") if isinstance(num, bytes) else str(num)
-                if mid in seen_ids:
-                    continue
-
+            for num in data[0].split():
                 _, msg_data = mail.fetch(num, "(RFC822)")
-                if not msg_data or not msg_data[0]:
-                    continue
-
-                raw_msg = msg_data[0][1]
-                msg = email.message_from_bytes(raw_msg)
+                msg = email.message_from_bytes(msg_data[0][1])
 
                 from_header = decode_mime(msg.get("From", ""))
-                subject = decode_mime(msg.get("Subject", ""))
 
                 if not is_allowed_sender(from_header):
-                    stats["skipped_sender"] = stats.get("skipped_sender", 0) + 1
-                    seen_ids.add(mid)
-                    mail.store(num, "+FLAGS", "\\Seen")
                     continue
 
                 body = get_body(msg)
-                if not body:
-                    seen_ids.add(mid)
-                    mail.store(num, "+FLAGS", "\\Seen")
+
+                if any(x in body.upper() for x in ["MAYBE","WAIT","UNCLEAR"]):
                     continue
 
-                h = message_hash(from_header, subject, body)
-                if h in sent_hashes:
-                    stats["duplicates"] = stats.get("duplicates", 0) + 1
-                    seen_ids.add(mid)
-                    mail.store(num, "+FLAGS", "\\Seen")
+                text, score, pair, direction = build_message(body)
+
+                if not text or score < MIN_SCORE:
                     continue
 
-                pretty_msg, score = build_message(body=body, subject=subject, sender=from_header)
+                send_telegram(text)
 
-                if score < MIN_SCORE:
-                    stats["skipped_low_score"] = stats.get("skipped_low_score", 0) + 1
-                    logger.info(f"🟡 Low score ({score}) skipped")
-                    seen_ids.add(mid)
-                    mail.store(num, "+FLAGS", "\\Seen")
-                    continue
+                mail.store(num, '+FLAGS', '\\Seen')
 
-                send_telegram(pretty_msg)
-                stats["sent"] = stats.get("sent", 0) + 1
-                sent_hashes.add(h)
-                seen_ids.add(mid)
-                mail.store(num, "+FLAGS", "\\Seen")
-                save_state()
-
-            mail.noop()
-
-        except Exception as e:
-            logger.error(f"🔄 Loop error: {e}")
-            try:
-                mail.logout()
-            except Exception:
-                pass
-            time.sleep(5)
-            mail = connect_mail()
+        except:
+            mail = connect()
 
         time.sleep(CHECK_INTERVAL)
 
+# ================== START ==================
 if __name__ == "__main__":
+    keep_alive()
     check_mail()
